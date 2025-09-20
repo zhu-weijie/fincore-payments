@@ -96,3 +96,206 @@ graph TD
 | **User's Browser** | **External User Agent** | (No change) Interacts differently depending on the chosen flow (redirected vs. using the SDK). |
 | **API Client** | **External System** | (No change) Interacts differently depending on the chosen flow (sending raw data vs. a token). |
 | **All other components**| (No change) | The existing databases, queues, and workers continue to function as previously designed. |
+
+#### **Overall Logical View**
+
+```mermaid
+graph TD
+    %% Define Actors and External Systems
+    api_client["API Client<br>[External System]<br>The merchant's backend."]
+    user_browser["User's Browser<br>[External System]"]
+    internal_user["Internal User<br>[Person]<br>Support & Finance staff."]
+    psp["Payment Service Provider<br>[External System]<br>e.g., Stripe, PayPal"]
+    psp_settlement["PSP Settlement System<br>[External System]<br>e.g., SFTP Server"]
+
+    %% --- System Boundaries ---
+    subgraph fincore_system["FinCore Payment System"]
+        direction LR
+
+        subgraph write_path["Write Path (Commands & Events)"]
+            direction TB
+            payment_service["Payment Service<br>[Container]<br>Handles API commands & webhooks. Publishes events."]
+            risk_engine["Risk Engine<br>[Service]<br>Performs synchronous fraud checks."]
+            rules_db["Rules Database<br>[Key-Value]<br>Stores risk rules."]
+            job_queue["Job Queue<br>[Queue]<br>Durable queue for payment & refund jobs."]
+            worker["Worker<br>[Asynchronous Processor]<br>Processes jobs and publishes outcome events."]
+            event_store["Event Store<br>[Durable Log]<br>The single source of truth for all events."]
+            psp_gateway["PSP Gateway<br>[Internal Component]<br>Interface to external PSPs."]
+        end
+        
+        subgraph read_path["Read Path (Queries & Projections)"]
+            direction TB
+            projectionist["Projectionist<br>[Consumer]<br>Builds the API's read model from events."]
+            ledger_service["Ledger Service<br>[Consumer]<br>Builds the financial ledger from events."]
+            payment_db["PaymentDB<br>[Read Model]<br>State store optimized for API queries."]
+            ledger_db["LedgerDB<br>[Read Model]<br>Immutable ledger for auditing."]
+            reconciliation_service["Reconciliation Service<br>[Scheduled Job]<br>Performs daily settlement checks."]
+        end
+    end
+
+    subgraph internal_tools["Internal Tools"]
+        admin_dashboard["Admin Dashboard<br>[Web Application]"]
+    end
+
+    %% --- Interactions ---
+
+    %% Write Path / Command Flow
+    api_client -- "1.Initiates Charge/Refund<br>(via Token, Raw Data, or Session)" --> payment_service
+    payment_service -- "2.Risk Check" --> risk_engine
+    risk_engine -- "Reads" --> rules_db
+    payment_service -- "3.Enqueues Job" --> job_queue
+    worker -- "4.Dequeues Job" --> job_queue
+    worker -- "5.Calls PSP via" --> psp_gateway
+    psp_gateway -- "6.Processes Payment" --> psp
+    psp -- "7.Sends Webhook" --> payment_service
+    payment_service -- "8.Publishes Event" --> event_store
+    worker -- "Publishes Event" --> event_store
+    
+    %% Read Path / Query & Projection Flow
+    event_store -- "Events Stream" --> projectionist
+    projectionist -- "Updates" --> payment_db
+    event_store -- "Events Stream" --> ledger_service
+    ledger_service -- "Writes Entries" --> ledger_db
+    
+    %% Query & Internal Tool Flow
+    api_client -- "Queries Status" --> payment_service
+    admin_dashboard -- "Queries Status" --> payment_service
+    payment_service -- "Reads From" --> payment_db
+    internal_user -- "Uses" --> admin_dashboard
+    
+    %% Reconciliation Flow
+    reconciliation_service -- "Reads" --> ledger_db
+    reconciliation_service -- "Fetches File From" --> psp_settlement
+    reconciliation_service -- "Notifies" --> internal_user
+
+    %% Client-Side Flows (Conceptual)
+    user_browser -. "Interacts with Merchant's Site" .-> api_client
+    user_browser -. "Tokenizes Card or Redirected" .-> psp
+```
+
+#### **Overall Physical View**
+
+```mermaid
+graph TD
+    %% --- External Actors & Systems ---
+    api_client["Merchant's Backend"]
+    user_browser["User's Browser"]
+    internal_user["Internal User"]
+    psp_api["External PSP API"]
+    psp_sftp["External PSP SFTP"]
+
+    %% --- AWS Cloud Boundary ---
+    subgraph aws_cloud["AWS Cloud"]
+        
+        %% --- Global & Non-VPC Services ---
+        subgraph devops_and_delivery["DevOps & Global Delivery"]
+            direction LR
+            codepipeline["AWS CodePipeline"]
+            cdn_sdk["CloudFront (for SDK)"]
+            s3_sdk["S3 (for SDK)"]
+            cdn_admin["CloudFront (for Admin UI)"]
+            s3_admin["S3 (for Admin UI)"]
+        end
+        
+        subgraph security_and_identity["Security & Identity"]
+            direction LR
+            cognito["AWS Cognito"]
+            secrets_manager["AWS Secrets Manager"]
+        end
+        
+        subgraph serverless_plane["Serverless Plane (Messaging & Data)"]
+            direction TB
+            kinesis["Amazon Kinesis<br>(Event Store)"]
+            sqs["Amazon SQS<br>(Job Queue)"]
+            dlq["SQS DLQ"]
+            dynamodb["Amazon DynamoDB<br>(Rules DB)"]
+        end
+
+        subgraph notifications["Notifications"]
+            direction LR
+            eventbridge["Amazon EventBridge"]
+            sns["Amazon SNS Topic"]
+        end
+        
+        %% --- VPC Boundary ---
+        subgraph vpc["VPC (PCI-Compliant Environment)"]
+            subgraph public_subnet["Public Subnet"]
+                alb["ALB"]
+                nat["NAT Gateway"]
+            end
+            
+            subgraph app_subnet["Private Subnet (Application)"]
+                fargate_task["Fargate Task<br>(Payment Service)"]
+                worker_lambda["Lambda<br>(Worker)"]
+                risk_lambda["Lambda<br>(Risk Engine)"]
+                projectionist_lambda["Lambda<br>(Projectionist)"]
+                ledger_lambda["Lambda<br>(Ledger Service)"]
+                reco_lambda["Lambda<br>(Reconciliation)"]
+            end
+            
+            subgraph db_subnet["Private Subnet (Database)"]
+                payment_db["RDS<br>(PaymentDB)"]
+                ledger_db["RDS<br>(LedgerDB)"]
+                redis["ElastiCache<br>(Idempotency)"]
+            end
+        end
+    end
+
+    %% --- Connections ---
+    %% Inbound & UI
+    api_client -- "API Calls" --> alb
+    user_browser -- "Loads Merchant Site & SDK" --> cdn_sdk
+    internal_user -- "Logs in" --> cognito
+    internal_user -- "Loads Admin UI" --> cdn_admin
+    cdn_sdk -- "serves" --> s3_sdk
+    cdn_admin -- "serves" --> s3_admin
+    alb -- "forwards to" --> fargate_task
+
+    %% Write/Command Path
+    fargate_task -- "Reads secrets" --> secrets_manager
+    fargate_task -- "Invokes" --> risk_lambda
+    fargate_task -- "Enqueues Job" --> sqs
+    fargate_task -- "Publishes Event" --> kinesis
+    risk_lambda -- "Reads rules" --> dynamodb
+    worker_lambda -- "Triggered by" --> sqs
+    worker_lambda -- "Reads secrets" --> secrets_manager
+    worker_lambda -- "Calls out via" --> nat --> psp_api
+    worker_lambda -- "Publishes Event" --> kinesis
+    sqs --> dlq
+
+    %% Read/Projection Path
+    kinesis -- "Triggers" --> projectionist_lambda
+    kinesis -- "Triggers" --> ledger_lambda
+    projectionist_lambda -- "Writes to" --> payment_db
+    ledger_lambda -- "Writes to" --> ledger_db
+    fargate_task -- "Reads for queries" --> payment_db
+    fargate_task -- "Reads/Writes idempotency keys" --> redis
+
+    %% Reconciliation & Alerting
+    eventbridge -- "Triggers" --> reco_lambda
+    reco_lambda -- "Reads secrets" --> secrets_manager
+    reco_lambda -- "Fetches file via" --> nat --> psp_sftp
+    reco_lambda -- "Reads from" --> ledger_db
+    reco_lambda -- "Publishes alert to" --> sns
+    sns -- "Notifies" --> internal_user
+```
+
+### **Component-to-Resource Mapping Table (Overall)**
+
+| Logical Component | Physical Resource | Rationale |
+| :--- | :--- | :--- |
+| **Payment Service** | **AWS Fargate Task** | Handles synchronous API requests and publishes events. Fargate provides a serverless container orchestration model. |
+| **Worker** | **AWS Lambda Function** | Processes jobs asynchronously from SQS. Lambda is a cost-effective, auto-scaling, event-driven compute service. |
+| **Risk Engine** | **AWS Lambda Function** | Provides low-latency, synchronous fraud checks. Lambda is ideal for fast, on-demand execution. |
+| **Projectionist** | **AWS Lambda Function** | Consumes events from Kinesis to build the `PaymentDB` read model. A serverless, event-driven consumer. |
+| **Ledger Service** | **AWS Lambda Function** | Consumes events from Kinesis to build the immutable `LedgerDB`. A serverless, event-driven consumer. |
+| **Reconciliation Service**| **AWS Lambda Function** | Runs a daily scheduled job triggered by EventBridge. Serverless is perfect for periodic, non-constant workloads. |
+| **Event Store** | **Amazon Kinesis Data Streams**| Provides a durable, ordered, and scalable log for our event-sourcing pattern. |
+| **Job Queue** | **Amazon SQS** | A durable, reliable, and fully managed queueing service with native DLQ support for failure handling. |
+| **Rules Database** | **Amazon DynamoDB** | A managed NoSQL database providing the single-digit millisecond latency required for the synchronous risk engine. |
+| **PaymentDB (Read Model)**| **Amazon RDS for PostgreSQL** | A managed relational database providing strong consistency for our API's query model. |
+| **LedgerDB (Read Model)**| **Amazon RDS for PostgreSQL** | A separate managed database providing isolation and security for the immutable financial ledger. |
+| **Idempotency Cache** | **Amazon ElastiCache for Redis**| A managed in-memory cache providing the low latency needed for the high-throughput idempotency check. |
+| **Admin Dashboard** | **Amazon S3 + CloudFront** | A standard, secure, and highly performant way to host and deliver a static Single Page Application globally. |
+| **Dashboard Auth** | **AWS Cognito** | A fully managed identity service that handles user authentication and authorization securely. |
+| **Alerting** | **Amazon SNS** | A flexible pub/sub service that decouples alert generation (from CloudWatch) from notification delivery. |
