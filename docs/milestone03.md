@@ -29,8 +29,8 @@ graph TD
             psp_iframe["PSP's Iframe<br>(for card fields)"]
         end
 
-        merchant_frontend -- "2. Initializes" --> sdk_core
-        sdk_core -- "3. Renders" --> psp_iframe
+        merchant_frontend -- "2.Initializes" --> sdk_core
+        sdk_core -- "3.Renders" --> psp_iframe
     end
 
     subgraph "FinCore Payment System"
@@ -40,14 +40,14 @@ graph TD
     api_client["API Client<br>[Merchant's Backend]"]
     psp["Payment Service Provider<br>[External System]"]
 
-    merchant_frontend -- "1. Serves checkout page" --> User([User])
-    User -- "4. Enters card details" --> psp_iframe
-    psp_iframe -- "5. Sends details directly to PSP" --> psp
-    psp -- "6. Returns payment_token" --> psp_iframe
-    psp_iframe -- "7. Passes token" --> sdk_core
-    sdk_core -- "8. Passes token" --> merchant_frontend
-    merchant_frontend -- "9. Sends token to merchant backend" --> api_client
-    api_client -- "10. Makes API call with token" --> payment_service
+    merchant_frontend -- "1.Serves checkout page" --> User([User])
+    User -- "4.Enters card details" --> psp_iframe
+    psp_iframe -- "5.Sends details directly to PSP" --> psp
+    psp -- "6.Returns payment_token" --> psp_iframe
+    psp_iframe -- "7.Passes token" --> sdk_core
+    sdk_core -- "8.Passes token" --> merchant_frontend
+    merchant_frontend -- "9.Sends token to merchant backend" --> api_client
+    api_client -- "10.Makes API call with token" --> payment_service
 ```
 
 ---
@@ -84,12 +84,12 @@ graph TD
         psp_api["PSP API & Iframe Host"]
     end
 
-    browser -- "1. GET page" --> merchant_server
-    browser -- "2. GET fincore.js" --> cdn
-    browser -- "3. GET iframe content" --> psp_api
-    browser -- "4. POST card data for token" --> psp_api
-    browser -- "5. POST token to merchant" --> merchant_server
-    merchant_server -- "6. API Call" --> alb
+    browser -- "1.GET page" --> merchant_server
+    browser -- "2.GET fincore.js" --> cdn
+    browser -- "3.GET iframe content" --> psp_api
+    browser -- "4.POST card data for token" --> psp_api
+    browser -- "5.POST token to merchant" --> merchant_server
+    merchant_server -- "6.API Call" --> alb
 ```
 
 ---
